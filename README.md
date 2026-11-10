@@ -1,0 +1,392 @@
+# Cronitor CLI
+[![Tests](https://github.com/cronitorio/cronitor-cli/actions/workflows/tests.yml/badge.svg)](https://github.com/cronitorio/cronitor-cli/actions/workflows/tests.yml)
+
+**Command line tools for Cronitor.io**
+
+CronitorCLI is the recommended companion application to the Cronitor monitoring service.  Use it on your workstation and deploy it to your server for powerful features, including:
+
+* Import and sync all of your cron jobs with Cronitor
+* Easily manage your cron jobs with the [web-based control panel](#crontab-guru-dashboard)
+* Automatic integration with Cronitor
+* Power tools for your cron jobs
+
+## Installation
+CronitorCLI is packaged as a single executable for Linux, MacOS and Windows. There is a simple installation script, but all you need to do is download and decompress the app into a location of your choice for easy system-wide use.
+
+For the latest installation details, see https://cronitor.io/docs/using-cronitor-cli#installation
+
+## Usage
+
+```
+cronitor [command]
+```
+
+### Sign in or create an account
+
+```bash
+cronitor auth login
+cronitor auth status
+cronitor monitor list
+```
+
+Login opens a browser using authorization code + PKCE. Sign in to your existing Cronitor account, or create one in the same browser step with Google, GitHub, or email and password. After approval, the CLI saves a named machine credential for this installation. `cronitor signup` is an alias for `cronitor auth login`.
+
+For remote terminals or agents, run `cronitor auth login --no-browser`. Keep the process running while the human opens the displayed authorization URL and completes sign-in or signup. The browser will redirect to `http://127.0.0.1:8319/callback` and may show a connection error because the CLI is on another computer. Copy the entire resulting URL from the browser address bar and paste it into the waiting CLI prompt (input is hidden). No SSH tunnel is needed. Paste this URL only into that prompt, not an agent conversation; it contains a short-lived authorization code. Never share passwords, API keys, or tokens.
+
+Local login listens only on `127.0.0.1:8319` and receives the callback automatically. If that port is occupied, close the other login attempt or use `--no-browser`. The CLI waits 30 minutes by default and prints that local deadline next to the authorization URL. After you open the link, finish signing in within about 5 minutes. Pass `--timeout` (for example `--timeout 2h`) to wait longer. Starting a new login replaces the previous URL. These instructions require version 33.7 or later: version 33.6 used a device flow that is incompatible with our authentication provider's External Sign-in. Existing API keys continue working; upgrade to 33.7 or later for browser login.
+
+Use a writable config owned by the OS user that will run the CLI. For a fresh Linux/macOS installation without a writable system config:
+
+```bash
+mkdir -p "$HOME/.config/cronitor"
+export CRONITOR_CONFIG="$HOME/.config/cronitor/cronitor.json"
+cronitor auth login --no-browser
+cronitor auth status
+```
+
+Keep using that config path (`CRONITOR_CONFIG` or `--config`) for subsequent commands. Login restricts the saved file to its owner (`0600` on Unix; an owner-restricted ACL on Windows). Jobs running as another OS user need their own config or credentials supplied through their service environment.
+
+`auth status` shows the credential's organization and permissions without exposing the key. Full-access users receive SDK Integration credentials; read-only users receive telemetry-only credentials and cannot manage account resources. Reuse working credentials rather than logging in again for every task.
+
+```bash
+cronitor auth login --admin
+```
+
+`--admin` also gives the credential account access. Only `cronitor team` and `cronitor apikey` then act as you, with your current role. Read-only users cannot use `cronitor apikey`, even with `--admin`. Every other command keeps the scopes fixed when the key was created, so demoting someone does not remove write access to monitors, status pages, sites and other resources. After demoting someone, delete their keys and have them log in again. Don't use `--admin` on shared servers: anyone who can read the config file can act as you. `auth status` shows whether the credential has account access.
+
+```bash
+cronitor auth logout
+```
+
+Logout revokes this installation's credential and removes it locally. **Scheduled jobs using that credential will stop authenticating.** Agents should not log out as routine task cleanup. The credential persists independently of the browser session. Removing a team member deletes only keys created with `cronitor auth login --admin`. Keys from a plain `cronitor auth login` are organization-owned and keep working. Replacing a credential with another login also does not revoke the previous key; remove unused keys in the dashboard.
+
+### Cron Management
+| Command | Description |
+|---------|-------------|
+| `cronitor sync` | Sync cron jobs to Cronitor |
+| `cronitor sync --format=short` | Also convert `cronitor exec` lines to `CRONITOR=<key>` lines |
+| `cronitor sync --format=exec` | Write all lines as `cronitor exec` and restore your `SHELL` |
+| `cronitor sync --with-monitored` | Also ask about jobs that are already monitored, for example to rename them |
+| `cronitor sync --dry-run` | Show what Linux/macOS crontab sync would change, without sending or writing. Does not apply to `--file` or Windows scheduled tasks |
+| `cronitor exec <key> <cmd>` | Run a command with monitoring |
+| `cronitor list` | List all cron jobs |
+| `cronitor status` | View monitor status |
+| `cronitor dash` | Start the web dashboard |
+
+#### How `cronitor sync` changes a crontab
+
+On Linux and macOS, sync puts the monitor key in front of each job you monitor, and adds one line to the top of the crontab:
+
+```
+SHELL=/etc/cronitor/shell
+0 1 * * * CRONITOR=abc123 /usr/local/bin/backup.sh
+```
+
+- A `CRONITOR=<key> <command>` line runs exactly like `cronitor exec <key> <command>`. `/etc/cronitor/shell` is a small script that cron starts every line with. For a line that starts with `CRONITOR=<key>`, it runs `cronitor exec`. Every other line runs in `/bin/sh`, as before.
+- If the crontab already had a `SHELL=` line, sync keeps that shell as `CRONITOR_SHELL=` (for example `CRONITOR_SHELL=/bin/zsh`), and jobs keep running in it.
+- Sync installs the script in `/etc/cronitor/` as root, or in `~/.cronitor/` otherwise.
+- If the `cronitor` binary is missing, marked jobs still run, without monitoring.
+- `MONITORIO=<key>` works the same as `CRONITOR=<key>`.
+- Sync leaves existing `cronitor exec` lines as they are. `--format=short` converts them. These flags move to settings on the line: `--no-stdout` (`CRONITOR_NO_STDOUT=1`), `--env` (`CRONITOR_ENV`), `--api-key` (`CRONITOR_API_KEY`), `--ping-api-key` (`CRONITOR_PING_API_KEY`) and `--hostname` (`CRONITOR_HOSTNAME`). A line with any other flag stays `cronitor exec`.
+
+  ```
+  0 1 * * * CRONITOR=abc123 CRONITOR_ENV=staging CRONITOR_NO_STDOUT=1 /usr/local/bin/backup.sh
+  ```
+- A `CRONITOR=<key>` line works only in a crontab that sync has changed. To add monitoring by hand to any other crontab, script or task, use `cronitor exec <key> <cmd>`.
+- To go back, run `cronitor sync --format=exec`.
+- Windows scheduled tasks always use `cronitor exec`.
+
+#### Running `cronitor sync` again
+
+There are three ways to run sync:
+
+| Command | Asks about | Picks up schedule and timezone changes | Monitors new jobs |
+| --- | --- | --- | --- |
+| `cronitor sync` | new jobs only | yes | the ones you choose |
+| `cronitor sync --with-monitored` | every job (to rename one) | yes | the ones you choose |
+| `cronitor sync --auto` | nothing | yes | **all of them** |
+
+- Run plain `cronitor sync` again whenever you add jobs or change a schedule. It shows one summary with each change (for example `L3  Nightly backup: schedule 0 2 * * * → 30 3 * * *`) and asks once. If nothing changed, it asks nothing.
+- `--auto` is for scripts and pipelines. When you pass a single crontab file, it prints that crontab to stdout even if nothing changed. Once sync has read the file, a failure prints the original crontab and exits 1. A direct `| crontab -` pipe can still install an empty crontab if sync fails before it can read the file, for example when the file is missing or a flag is invalid. Capture the output first: `out=$(cronitor sync --auto file) && printf '%s\n' "$out" | crontab -`. Do not add `--silent` to that command: `--auto --silent` prints no crontab, so the pipe would install an empty one. It also monitors every new job, so it is not the way to pick up one schedule change.
+- If any crontab fails to apply, in any mode, sync exits 1.
+- For a monitored job, sync sends only what changed. Names, tags and alert lists set in Cronitor are kept; alert lists change only with `--notification-list` (omitting the flag keeps existing lists; new monitors get Cronitor's default). A `# Name:` comment is updated to the name in Cronitor.
+- If a monitor was deleted in Cronitor, sync warns and does not create it again. A hand-written `CRONITOR=new-key` line for a monitor that was never created gets the same warning; create the monitor first, or remove the key and let sync add it.
+- In the menu: Enter selects, `s` skips, and `q`, Esc, Ctrl+C or Ctrl+D quits. While typing a name, `s` and `q` type normally, Esc goes back, and Ctrl+C or Ctrl+D quits. If you quit with pending changes, sync shows the summary and asks whether to save. "Skip this job, don't ask again" adds `# cronitor: ignore` above the line; a monitored job keeps reporting to Cronitor.
+- Without root, sync prints one hint when system crontabs have jobs it could not check (`Run sync with sudo to include them`).
+- Windows scheduled-task sync asks about every task, as before. Its menu shows every option at once and lists the keys; `q`, Esc and Ctrl+C skip one task, Ctrl+D stops, and "don't ask again" is not offered because that flow cannot save it.
+
+### API Resources
+
+Manage Cronitor resources directly from the command line.
+
+#### Monitors
+
+```bash
+cronitor monitor list                                    # List all monitors
+cronitor monitor list --type job --state failing         # Filter by type and state
+cronitor monitor list --tag critical --env production    # Filter by tag and environment
+cronitor monitor export -o monitors.yaml                  # Export full YAML config
+cronitor monitor export --type job                       # Export only jobs
+cronitor monitor search "backup"                         # Search monitors
+cronitor monitor get <key>                               # Get monitor details
+cronitor monitor get <key> --with-events                 # Include latest events
+cronitor monitor create -d '{"key":"my-job","type":"job"}'
+cronitor monitor create --file monitors.yaml             # Create from YAML
+cronitor monitor update <key> -d '{"name":"New Name"}'
+cronitor monitor delete <key>                            # Delete one
+cronitor monitor delete key1 key2 key3                   # Delete many
+cronitor monitor clone <key> --name "Copy"               # Clone a monitor
+cronitor monitor pause <key>                             # Pause indefinitely
+cronitor monitor pause <key> --hours 24                  # Pause for 24 hours
+cronitor monitor unpause <key>
+```
+
+#### Status Pages
+
+```bash
+cronitor statuspage list
+cronitor statuspage list --with-status                   # Include current status
+cronitor statuspage get <key> --with-components          # Include components
+cronitor statuspage create -d '{"name":"My Status Page","hosted_subdomain":"my-status"}'
+cronitor statuspage update <key> -d '{"name":"Updated","hosted_subdomain":"my-status"}'
+cronitor statuspage delete <key>
+
+# Components (nested under statuspage)
+cronitor statuspage component list --statuspage my-page
+cronitor statuspage component create -d '{"statuspage":"my-page","monitor":"api-health"}'
+cronitor statuspage component update <key> -d '{"name":"New Name"}'
+cronitor statuspage component delete <key>
+```
+
+#### Issues
+
+```bash
+cronitor issue list                                      # List all issues
+cronitor issue list --state unresolved --severity outage # Filter
+cronitor issue list --monitor my-job --time 24h          # By monitor, time range
+cronitor issue list --search "database"                  # Search issues
+cronitor issue get <key>
+cronitor issue create -d '{"name":"DB issues","severity":"outage"}'
+cronitor issue update <key> -d '{"name":"DB issues","state":"investigating"}'
+cronitor issue resolve <key>                             # Shorthand for resolving
+cronitor issue delete <key>
+cronitor issue bulk --action delete --issues KEY1,KEY2   # Bulk actions
+```
+
+#### Notifications
+
+```bash
+cronitor notification list
+cronitor notification get <key>
+cronitor notification create -d '{"name":"DevOps","notifications":{"emails":["team@co.com"]}}'
+cronitor notification update <key> -d '{"name":"Updated"}'
+cronitor notification delete <key>
+```
+
+#### Integrations
+
+```bash
+cronitor connect                                      # List available services
+cronitor connect slack                                # OAuth: print URL, open browser, wait
+cronitor connect slack --no-browser                   # Print authorize URL only
+cronitor connect pagerduty --timeout 10m --add-to default
+cronitor connect opsgenie --name "On-call" --field key=SECRET
+cronitor connect telegram                             # Print bot instructions; wait for a new label
+cronitor connect telegram --name "On-call bot"        # Wait for a new label that matches
+
+cronitor integration list
+cronitor integration list --service slack
+cronitor integration get Workspace
+cronitor integration get Alerts --service slack
+cronitor integration services
+cronitor integration create --service discord --name "Alerts" --field key=https://example.com/webhook
+cronitor integration create -d '{"service":"webhook","name":"Hook","fields":{"key":"https://example.com"}}'
+cronitor integration delete Alerts
+cronitor integration delete Alerts --force
+```
+
+Field names come from `cronitor integration services`. Most API-key services take a single `key`
+(the webhook URL or API key). Omit `--field` to be prompted; values passed with `--field` are
+visible in shell history.
+
+#### Groups
+
+```bash
+cronitor group list
+cronitor group list --with-status                       # Include group status
+cronitor group get <key>
+cronitor group create -d '{"name":"Production Jobs"}'
+cronitor group update <key> -d '{"monitors":["job1","job2"]}'
+cronitor group delete <key>
+cronitor group pause <key> 24                            # Pause all monitors for 24 hours
+cronitor group resume <key>                              # Resume all monitors
+```
+
+#### Environments
+
+```bash
+cronitor environment list
+cronitor environment get <key>
+cronitor environment create -d '{"key":"staging","name":"Staging"}'
+cronitor environment update <key> -d '{"name":"Updated"}'
+cronitor environment delete <key>
+```
+
+#### Team
+
+```bash
+cronitor team list
+cronitor team list --format json
+cronitor team invite jane@example.com --name "Jane Doe"        # Role defaults to user
+cronitor team invite ops@example.com --name "Ops" --role readonly
+cronitor team role jane@example.com admin                      # admin, user, or readonly
+cronitor team remove jane@example.com                          # Asks first; --yes skips
+```
+
+#### API Keys
+
+```bash
+cronitor apikey list                                           # Table masks each key
+cronitor apikey list --search deploy --page 2
+cronitor apikey list --format json                             # Prints full keys
+cronitor apikey get <key>
+cronitor apikey create --name "Deploy bot" --scope monitor:read --scope monitor:write
+cronitor apikey create --name "Telemetry" --kind telemetry
+cronitor apikey update <key> --name "Renamed"
+cronitor apikey update <key> --scope monitor:read              # Replaces the scopes
+cronitor apikey delete <key>                                   # Asks first; --yes skips
+```
+
+Team and API key commands need a credential from `cronitor auth login --admin` and act with the logged-in user's current role. Any role can list the team; inviting, changing roles, and removing members need the admin role. A team member's id is their email address, the same value `team list` prints in the ID column. You can only grant API key scopes your own role has. `apikey create` prints the full key once. Without `--yes`, `team remove` and `apikey delete` refuse to run when stdin is not a terminal.
+
+**Aliases:** `cronitor env` → `environment`, `cronitor notifications` → `notification`, `cronitor integrations` → `integration`, `cronitor teams` → `team`, `cronitor apikeys` / `cronitor keys` → `apikey`
+
+### Common Flags
+
+| Flag | Description |
+|------|-------------|
+| `--format json\|table` | Output format (default: `table` for list, `json` for get). `monitor` also accepts `yaml` |
+| `-o, --output <file>` | Write output to a file |
+| `--page <n>` | Page number for paginated results |
+| `-d, --data <json>` | JSON data for create/update |
+| `-f, --file <path>` | Read JSON from a file (`monitor create`/`update` and `integration create`; `monitor create` also reads YAML) |
+| `-k, --api-key <key>` | Cronitor API key (appears in shell history and process lists; prefer `CRONITOR_API_KEY`) |
+
+## Crontab Guru Dashboard
+
+The Cronitor CLI bundles the [Crontab Guru Dashboard](https://crontab.guru/dashboard.html), a self‑hosted web UI to manage your cron jobs, including a one‑click “run now” and "suspend", a local console for testing jobs, and a built in MCP server for configuring jobs and checking the health/status of existing ones.
+
+Start locally
+
+```
+cronitor dash
+# then visit http://localhost:9000
+```
+
+Secure access
+The dashboard is intended for local or secured access. A simple, safe pattern for remote use is an SSH tunnel:
+```
+ssh -L 9000:localhost:9000 user@your-server
+# now open http://localhost:9000
+```
+
+Access control & options
+```
+# Set login credentials via environment variables (preferred).
+# --dash-username / --dash-password work but appear in shell history and process lists.
+export CRONITOR_DASH_USER=USER
+export CRONITOR_DASH_PASS=PASS
+cronitor configure
+
+# Optionally, restrict which system users' crontabs are loaded
+cronitor configure --users user1,user2
+```
+### Docker
+
+The included `dockerfile` downloads and extracts the CLI for the target platform
+(`amd64`, `arm64`, or `arm`). Credentials are supplied when the container starts;
+do not put them in Docker build arguments or Dockerfile `ENV` instructions.
+The dashboard reads these environment variables directly, so no
+`cronitor configure` step is needed.
+
+Create a local `.env` file (ignored by Git) and set permissions with `chmod 600 .env`:
+
+```dotenv
+CRONITOR_DASH_USER=your-username
+CRONITOR_DASH_PASS='replace-with-a-strong-password'
+```
+
+Then build and start the dashboard:
+
+```sh
+docker compose -f compose.dashboard.yml up -d --build
+```
+
+Open `http://localhost:9000`, or use the SSH tunnel above for remote access.
+The Compose example requires both credentials and binds the port to localhost.
+Runtime environment variables remain accessible to Docker administrators.
+Configuration and container crontabs are stored in named volumes. This starts
+the dashboard only; running scheduled jobs also requires a cron daemon.
+
+The existing `docker-compose.yml` is for development. For systemd setup and
+additional deployment guidance, see the [Dashboard documentation](https://crontab.guru/dashboard.html).
+
+## Configuration and secrets
+
+Browser login above is the default for interactive use. Existing explicit API keys remain supported for CI, containers, and secret-managed deployments; no login is required when those credentials already work.
+
+Do not put API keys, ping keys, or dashboard passwords on the command line. Those flags (`--api-key`, `--ping-api-key`, `--dash-password`) remain for compatibility but appear in shell history and process lists. Set credentials in the environment instead:
+
+```
+export CRONITOR_API_KEY
+export CRONITOR_PING_API_KEY
+cronitor configure
+```
+
+`cronitor configure` prints `API Key: Set` / `Ping API Key: Set` (or `Not Set`). It never prints complete keys. Dashboard passwords are shown as `********`.
+
+New config files are created **owner-only** (`0600` on Unix; an owner-restricted ACL on Windows), and `configure` prints a note saying so the first time. Ordinary `configure` saves preserve an existing file's permissions; `auth login` restricts the file to its owner. `exec` and `ping` read the file exactly as before.
+
+Default paths are unchanged: `/etc/cronitor/cronitor.json` (Linux/macOS) and `%SystemDrive%\ProgramData\Cronitor\cronitor.json` (Windows).
+
+If an existing file is readable by other users, `configure` prints a note after saving. To make it owner-only:
+
+```
+cronitor configure --restrict
+```
+
+Jobs that run as another user then need credentials from somewhere else:
+
+1. **Preferred:** set `CRONITOR_API_KEY` / `CRONITOR_PING_API_KEY` in the crontab or service environment. On Windows, set them on the scheduled task or Windows service.
+2. **Per-user file:** a user-owned `0600` file via `--config` / `CRONITOR_CONFIG`.
+
+If the config file exists but cannot be read, the CLI prints one warning to stderr naming the path instead of running unconfigured.
+
+On Windows, new files get an owner-restricted ACL (Administrators and SYSTEM keep access, a platform limitation). Existing files keep their ACL unless `--restrict` is passed.
+
+### Telemetry host
+
+Pings go to `cronitor.link` by default, which is right for most workloads. For latency-sensitive workloads in Europe, send pings to the EU endpoint instead:
+
+```
+export CRONITOR_PING_API_HOST=eu.cronitor.link
+```
+
+You can also pass `--ping-api-host eu.cronitor.link`, or save it with `cronitor configure --ping-api-host eu.cronitor.link`. The EU endpoint accepts the same API keys and sends events to the same monitors. It changes only where requests are received; it is not a data residency option. A bare host gets `https://`. Retries still fall back to `cronitor.io`. A host outside `cronitor.link`, such as a private proxy, is used for every attempt.
+
+## MCP Server (AI Integration)
+
+The Cronitor CLI includes a built-in [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server for managing cron jobs with natural language through AI-powered tools like Claude Code, Cursor, Cline, and Windsurf.
+
+**Quick start:** Run `cronitor dash` on your server, then configure your MCP client to spawn `cronitor dash --mcp-instance default`.
+
+For setup instructions, available tools, and configuration options, see the [MCP Integration Guide](docs/MCP_INTEGRATION.md).
+
+## Uninstall CronitorCLI
+First, run `cronitor sync --format=exec` for each crontab that sync changed. This removes the `SHELL=.../cronitor/shell` line (and `CRONITOR_SHELL=`, if any), restores your previous `SHELL`, and writes monitored jobs as `cronitor exec MONITOR_KEY ...`.
+
+**Do not delete `/etc/cronitor/shell` while a crontab still has `SHELL=/etc/cronitor/shell`. If you do, no job in that crontab runs, including jobs without monitoring.**
+
+Then, update any crontab files that were edited to include Cronitor to remove the reference to `cronitor exec MONITOR_KEY` that were added when you created monitors.
+
+Then, remove `/etc/cronitor/shell` or `~/.cronitor/shell`, and remove the cronitor executable from wherever it was installed. If you followed our default instructions it can be removed with `rm /usr/bin/cronitor`

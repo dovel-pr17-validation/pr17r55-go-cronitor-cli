@@ -1,0 +1,185 @@
+name: "CronitorCLI Tests"
+
+on:
+  - push
+
+jobs:
+  windows-tests:
+    name: Run Windows tests
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: '${{ github.workspace }}/go.mod'
+
+      # Prefer MSYS2 bash to git bash
+      - name:  "add-path"
+        shell: cmd
+        env:
+          ACTIONS_ALLOW_UNSECURE_COMMANDS: true
+        run:   |
+          echo ::add-path::C:\msys64\usr\bin
+          dir C:\msys64\usr\bin
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install web dependencies
+        shell: bash
+        run: |
+          cd web
+          npm ci
+
+      - name: Test dependency fixes
+        shell: bash
+        run: cd web && npm run test:dependencies
+
+      - name: Build web assets
+        shell: bash
+        run: |
+          cd web
+          npm run build
+
+      - name: Setup BATS
+        uses: mig4/setup-bats@v1
+        with:
+          bats-version: 1.7.0
+
+      - name: Build binary
+        shell: bash
+        run: go build -o cronitor main.go
+
+      - name: Run Go tests
+        shell: bash
+        run: go test ./...
+
+      - name: Run tests
+        working-directory: tests
+        shell: bash
+        env:
+          CRONITOR_API_KEY: "${{ secrets.CRONITOR_API_KEY }}"
+          WINDOWS: 'true'
+        run: |
+          echo "::add-mask::$CRONITOR_API_KEY"
+          export BATS_PATH="$(which bats)"
+          $BATS_PATH *.bats
+
+      - name: Delete monitors created by this run
+        if: always()
+        working-directory: tests
+        shell: bash
+        env:
+          CRONITOR_API_KEY: "${{ secrets.CRONITOR_API_KEY }}"
+        run: ./cleanup-ci-monitors.sh
+
+
+  linux-tests:
+    name: Run Linux tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: '${{ github.workspace }}/go.mod'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install web dependencies
+        run: |
+          cd web
+          npm ci
+
+      - name: Test dependency fixes
+        run: cd web && npm run test:dependencies
+
+      - name: Build web assets
+        run: |
+          cd web
+          npm run build
+
+      - name: Setup BATS
+        uses: mig4/setup-bats@v1
+        with:
+          bats-version: 1.7.0
+
+      - name: Build binary
+        run: go build -o cronitor main.go
+
+      - name: Run Go tests
+        run: go test ./...
+
+      # ubuntu-26.04 runners all report the same hostname, and discover derives
+      # monitor keys from it. Give each run its own so concurrent runs never
+      # share keys or delete each other's monitors.
+      - name: Use a per-run hostname
+        run: |
+          h="ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "127.0.0.1 $h" | sudo tee -a /etc/hosts > /dev/null
+          sudo hostname "$h"
+
+      - name: Run tests
+        working-directory: tests
+        env:
+          CRONITOR_API_KEY: "${{ secrets.CRONITOR_API_KEY }}"
+          WINDOWS: 'false'
+        run: |
+          echo "::add-mask::$CRONITOR_API_KEY"
+          export BATS_PATH="$(which bats)"
+          sudo --preserve-env=WINDOWS,CRONITOR_API_KEY -n -- $BATS_PATH *.bats
+
+      - name: Delete monitors created by this run
+        if: always()
+        working-directory: tests
+        env:
+          CRONITOR_API_KEY: "${{ secrets.CRONITOR_API_KEY }}"
+        run: ./cleanup-ci-monitors.sh
+
+  # Stable Go compile and unit tests only. BATS uses the live API.
+  go-stable:
+    name: Run stable Go tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: 'stable'
+          check-latest: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install web dependencies
+        run: |
+          cd web
+          npm ci
+
+      - name: Build web assets
+        run: |
+          cd web
+          npm run build
+
+      - name: Build binary
+        run: go build -o cronitor main.go
+
+      - name: Run Go tests
+        run: go test ./...
